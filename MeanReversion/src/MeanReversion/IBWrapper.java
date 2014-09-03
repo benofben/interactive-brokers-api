@@ -1,6 +1,7 @@
 package MeanReversion;
 
-import java.util.Scanner;
+import java.util.HashMap;
+import java.util.Map.Entry;
 
 import com.ib.client.CommissionReport;
 import com.ib.client.Contract;
@@ -13,42 +14,45 @@ import com.ib.client.OrderState;
 import com.ib.client.UnderComp;
 
 public class IBWrapper implements EWrapper{
-    private EClientSocket m_client = new EClientSocket( this);
+    private EClientSocket m_client = new EClientSocket(this);
+    Contract contract;
+    int id;
+    
+	double bidPrice;
+	double askPrice;
+	
+	HashMap<String, Integer[]> activeTrades = new HashMap<String, Integer[]>();
+	HashMap<Integer, String> orderStatus = new HashMap<Integer, String>();
 
     public IBWrapper() {
+		contract = new Contract();
+		contract.m_symbol = "ES";
+	    contract.m_secType = "FUT";
+	    contract.m_expiry = "201412";
+	    contract.m_exchange = "GLOBEX";
+	    contract.m_currency = "USD";
+	    
     	connect();
-    	requestMarketData();
-
-    	Scanner keyboard = new Scanner(System.in);
-    	keyboard.nextLine();	
-    	keyboard.close();
-    	
-    	disconnect();
+    	requestMarketData();    	
 	}
 
 	private void connect() {
 		String host = "";
 		int port = 7496;
-		int clientId = 123;
+		int clientId = 576;
 		m_client.eConnect(host, port, clientId);
 		if (m_client.isConnected()) {
 			System.out.println("Connected to Tws server version " + m_client.serverVersion() + " at " + m_client.TwsConnectionTime());
 		}
 	}
 
-	private void disconnect() {
+	public void disconnect() {
 		m_client.eDisconnect();
 		System.out.println("Disconnected");
 	}
 	
 	private void requestMarketData(){
 		int tickerId=0;
-		Contract contract = new Contract();
-		contract.m_symbol = "ES";
-	    contract.m_secType = "FUT";
-	    contract.m_expiry = "201412";
-	    contract.m_exchange = "GLOBEX";
-	    contract.m_currency = "USD";
 	       
 		String genericTickList = "";
 		boolean snapshot = false;
@@ -57,17 +61,17 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void error(Exception e) {
-		System.out.println("error 1: " + e.toString());
+		System.out.println("error e: " + e.toString());
 	}
 
 	@Override
 	public void error(String str) {
-		System.out.println("error 2: " + str);
+		System.out.println("error str: " + str);
 	}
 
 	@Override
 	public void error(int id, int errorCode, String errorMsg) {
-		System.out.println("error 3: " + errorMsg);
+		System.out.println("error id: " + id + " errorMsg: " + errorMsg);
 	}
 
 	@Override
@@ -77,12 +81,56 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void tickPrice(int tickerId, int field, double price, int canAutoExecute) {
-		System.out.println("tickPrice: " + tickerId + " " + field + " " + price);
+		System.out.println("tickPrice tickerId: " + tickerId + " field: " + field + " price: " + price);
+		
+		if(field==1)
+		{
+			System.out.println("Bid is " + price);
+			bidPrice=price;
+		}
+		else if(field==2)
+		{
+			System.out.println("Ask is " + price);
+			askPrice=price;
+		}
+		
+		if(field==1 || field==2){
+			placeTwoLegOrder();
+		}
+	}
+	
+	private synchronized void placeTwoLegOrder()
+	{
+		String key = "bidPrice: " + Double.toString(bidPrice) + " askPrice: " + Double.toString(askPrice);
+		if(!activeTrades.containsKey(key) && bidPrice!=0 && askPrice!=0)
+		{
+			Integer[] value = new Integer[2];
+			value[0] = placeOrder(bidPrice, "BUY");
+			value[1] = placeOrder(askPrice, "SELL");
+			activeTrades.put(key, value);			
+			System.out.println("Submitted a trade with key: " + key);
+		}
+		else if(activeTrades.containsKey(key))
+		{
+			System.out.println("A trade already exists with key: " + key);
+		}
+	}
+	
+	private synchronized int placeOrder(double price, String action){
+		id++;
+		Order order = new Order();
+		order.m_lmtPrice=price;
+		order.m_orderType="LMT";
+		order.m_totalQuantity=1;
+		order.m_action=action;
+		m_client.placeOrder(id, contract, order);
+		orderStatus.put(id, "New");
+		return id;
 	}
 
 	@Override
 	public void tickSize(int tickerId, int field, int size) {
-		System.out.println("tickSize: " + tickerId + " " + field + " " + size);
+		//System.out.println("tickSize tickerId: " + tickerId + " field: " + field + " size: " + size);
 	}
 
 	@Override
@@ -92,12 +140,12 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void tickGeneric(int tickerId, int tickType, double value) {
-		System.out.println("tickGeneric: " + tickerId + " " + tickType + " " + value);
+		System.out.println("tickGeneric tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
 	}
 
 	@Override
 	public void tickString(int tickerId, int tickType, String value) {
-		System.out.println("tickString: " + " " + tickerId + " " + tickType + " " + value);
+		System.out.println("tickString tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
 	}
 
 	@Override
@@ -107,7 +155,29 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void orderStatus(int orderId, String status, int filled, int remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, String whyHeld) {
-		System.out.println("orderStatus");
+		System.out.println("orderStatus status: " + status + " orderId: " + orderId);
+		orderStatus.put(orderId, status);
+		
+		if(status.equals("Filled")){
+			deleteCompletedTrades();			
+		}
+	}
+	
+	private synchronized void deleteCompletedTrades(){
+		System.out.println("Checking for trades to delete.");
+		for(Entry<String, Integer[]> entry : activeTrades.entrySet()) {
+		    String key = entry.getKey();
+		    Integer[] value = entry.getValue();
+		    
+		    // get the status of the two legs of our trade
+		    String bidStatus=orderStatus.get(value[0]);
+		    String askStatus=orderStatus.get(value[1]);
+		    
+		    if(bidStatus.equals("Filled") && askStatus.equals("Filled")){
+		    	activeTrades.remove(key);
+		    	System.out.println("Removed a filled trade with key: " + key);
+		    }
+		}
 	}
 
 	@Override
@@ -142,7 +212,8 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void nextValidId(int orderId) {
-		System.out.println("nextValidId");
+		System.out.println("nextValidId orderId: " + orderId);
+		id=orderId;
 	}
 
 	@Override
