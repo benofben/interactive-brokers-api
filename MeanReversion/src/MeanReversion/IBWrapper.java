@@ -1,7 +1,7 @@
 package MeanReversion;
 
-import java.util.HashMap;
 import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.ib.client.CommissionReport;
 import com.ib.client.Contract;
@@ -16,13 +16,19 @@ import com.ib.client.UnderComp;
 public class IBWrapper implements EWrapper{
     private EClientSocket m_client = new EClientSocket(this);
     Contract contract;
-    int id;
     
+    // next unused orderId
+    int id=1;
+    
+    // most recent bid and ask.  0 if not initialized.
 	double bidPrice;
 	double askPrice;
 	
-	HashMap<String, Integer[]> activeTrades = new HashMap<String, Integer[]>();
-	HashMap<Integer, String> orderStatus = new HashMap<Integer, String>();
+	// price (bid or ask), orderId
+	ConcurrentHashMap<Double, Integer> activeTrades = new ConcurrentHashMap<Double, Integer>();
+	
+	// orderId, status
+	ConcurrentHashMap<Integer, String> orderStatus = new ConcurrentHashMap<Integer, String>();
 
     public IBWrapper() {
 		contract = new Contract();
@@ -95,37 +101,42 @@ public class IBWrapper implements EWrapper{
 		}
 		
 		if(field==1 || field==2){
-			placeTwoLegOrder();
+			place10orders();
 		}
 	}
 	
-	private synchronized void placeTwoLegOrder()
+	private synchronized void place10orders()
 	{
-		String key = "bidPrice: " + Double.toString(bidPrice) + " askPrice: " + Double.toString(askPrice);
-		if(!activeTrades.containsKey(key) && bidPrice!=0 && askPrice!=0)
+		if (bidPrice==0 || askPrice==0)
+			return;
+
+		for(int i=0;i<5;i++)
 		{
-			Integer[] value = new Integer[2];
-			value[0] = placeOrder(bidPrice, "BUY");
-			value[1] = placeOrder(askPrice, "SELL");
-			activeTrades.put(key, value);			
-			System.out.println("Submitted a trade with key: " + key);
-		}
-		else if(activeTrades.containsKey(key))
-		{
-			System.out.println("A trade already exists with key: " + key);
+			placeOrder(bidPrice-i*0.25, "BUY");
+			placeOrder(askPrice+i*0.25, "SELL");
 		}
 	}
 	
-	private synchronized int placeOrder(double price, String action){
-		id++;
+	private synchronized void placeOrder(double price, String action){
+		if(activeTrades.containsKey(price))
+		{
+			System.out.println("Trade with price " + price + " already exists.");
+			return;
+		}
+		
+		System.out.println("Going to " + action + " at " + price + ".");
+
 		Order order = new Order();
 		order.m_lmtPrice=price;
 		order.m_orderType="LMT";
 		order.m_totalQuantity=1;
 		order.m_action=action;
 		m_client.placeOrder(id, contract, order);
+
+		activeTrades.put(price, id);
 		orderStatus.put(id, "New");
-		return id;
+
+		id++;
 	}
 
 	@Override
@@ -165,17 +176,15 @@ public class IBWrapper implements EWrapper{
 	
 	private synchronized void deleteCompletedTrades(){
 		System.out.println("Checking for trades to delete.");
-		for(Entry<String, Integer[]> entry : activeTrades.entrySet()) {
-		    String key = entry.getKey();
-		    Integer[] value = entry.getValue();
+		for(Entry<Double, Integer> entry : activeTrades.entrySet()) {
+		    double price = entry.getKey();
+		    int orderId = entry.getValue();
 		    
-		    // get the status of the two legs of our trade
-		    String bidStatus=orderStatus.get(value[0]);
-		    String askStatus=orderStatus.get(value[1]);
+		    String status=orderStatus.get(orderId);
 		    
-		    if(bidStatus.equals("Filled") && askStatus.equals("Filled")){
-		    	activeTrades.remove(key);
-		    	System.out.println("Removed a filled trade with key: " + key);
+		    if(status.equals("Filled")){
+		    	activeTrades.remove(price);
+		    	System.out.println("Removed a filled trade with price: " + price);
 		    }
 		}
 	}
