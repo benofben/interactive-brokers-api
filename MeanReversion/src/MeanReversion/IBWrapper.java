@@ -1,5 +1,7 @@
 package MeanReversion;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -12,6 +14,8 @@ import com.ib.client.Execution;
 import com.ib.client.Order;
 import com.ib.client.OrderState;
 import com.ib.client.UnderComp;
+
+// need to handle rejected orders.  How do I find out an order has been rejected?
 
 public class IBWrapper implements EWrapper{
     private EClientSocket m_client = new EClientSocket(this);
@@ -28,8 +32,17 @@ public class IBWrapper implements EWrapper{
 	ConcurrentHashMap<Double, Integer> activeTrades = new ConcurrentHashMap<Double, Integer>();
 	
 	// orderId, status
+	// Custom Status: New, Matched
+	// IB Status: PreSubmitted, Submitted, Filled, Cancelled, Inactive
 	ConcurrentHashMap<Integer, String> orderStatus = new ConcurrentHashMap<Integer, String>();
 
+	// orderId, side
+	ConcurrentHashMap<Integer, String> orderSide = new ConcurrentHashMap<Integer, String>();
+
+	// two lists of orderIds that have bill filled but not matched yet
+	List<Integer> longTradeList = new ArrayList<Integer>();
+	List<Integer> shortTradeList = new ArrayList<Integer>();
+	
     public IBWrapper() {
 		contract = new Contract();
 		contract.m_symbol = "ES";
@@ -87,16 +100,16 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void tickPrice(int tickerId, int field, double price, int canAutoExecute) {
-		System.out.println("tickPrice tickerId: " + tickerId + " field: " + field + " price: " + price);
+		//System.out.println("tickPrice tickerId: " + tickerId + " field: " + field + " price: " + price);
 		
 		if(field==1)
 		{
-			System.out.println("Bid is " + price);
+			//System.out.println("Bid changed to " + price);
 			bidPrice=price;
 		}
 		else if(field==2)
 		{
-			System.out.println("Ask is " + price);
+			//System.out.println("Ask changed to " + price);
 			askPrice=price;
 		}
 		
@@ -109,7 +122,7 @@ public class IBWrapper implements EWrapper{
 	{
 		if (bidPrice==0 || askPrice==0)
 			return;
-
+		
 		for(int i=0;i<5;i++)
 		{
 			placeOrder(bidPrice-i*0.25, "BUY");
@@ -120,7 +133,7 @@ public class IBWrapper implements EWrapper{
 	private synchronized void placeOrder(double price, String action){
 		if(activeTrades.containsKey(price))
 		{
-			System.out.println("Trade with price " + price + " already exists.");
+			//System.out.println("Trade with price " + price + " already exists.");
 			return;
 		}
 		
@@ -135,6 +148,7 @@ public class IBWrapper implements EWrapper{
 
 		activeTrades.put(price, id);
 		orderStatus.put(id, "New");
+		orderSide.put(id, action);
 
 		id++;
 	}
@@ -151,12 +165,12 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void tickGeneric(int tickerId, int tickType, double value) {
-		System.out.println("tickGeneric tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
+		//System.out.println("tickGeneric tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
 	}
 
 	@Override
 	public void tickString(int tickerId, int tickType, String value) {
-		System.out.println("tickString tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
+		//System.out.println("tickString tickerId: " + tickerId + " tickType: " + tickType + " value: " + value);
 	}
 
 	@Override
@@ -170,28 +184,53 @@ public class IBWrapper implements EWrapper{
 		orderStatus.put(orderId, status);
 		
 		if(status.equals("Filled")){
-			deleteCompletedTrades();			
+			// Now we want to match this with another trade before we trade again at this price
+			String side = orderSide.get(orderId);
+			
+			if(side.equals("BUY")){
+				longTradeList.add(orderId);
+			}
+			else if(side.equals("SELL")){
+				shortTradeList.add(orderId);
+			}
+			
+			matchFilledTrades();
 		}
+		deleteCompletedTrades();
+	}
+	
+	private synchronized void matchFilledTrades(){
+		if(!longTradeList.isEmpty() && !shortTradeList.isEmpty()){
+			int shortOrderId = shortTradeList.remove(0);
+			orderStatus.put(shortOrderId, "Matched");
+
+			int longOrderId = longTradeList.remove(0);
+			orderStatus.put(longOrderId, "Matched");
+			
+			System.out.println("Matched two trades.");
+		}		
 	}
 	
 	private synchronized void deleteCompletedTrades(){
-		System.out.println("Checking for trades to delete.");
+		//System.out.println("Checking for trades to delete.");
 		for(Entry<Double, Integer> entry : activeTrades.entrySet()) {
 		    double price = entry.getKey();
 		    int orderId = entry.getValue();
-		    
+	
 		    String status=orderStatus.get(orderId);
 		    
-		    if(status.equals("Filled")){
+		    if(status.equals("Matched") || status.equals("Cancelled")){
 		    	activeTrades.remove(price);
-		    	System.out.println("Removed a filled trade with price: " + price);
+//		    	orderStatus.remove(orderId);
+//		    	orderSide.remove(orderId);
+		    	System.out.println("Removed a trade with price: " + price);
 		    }
 		}
 	}
 
 	@Override
 	public void openOrder(int orderId, Contract contract, Order order, OrderState orderState) {
-		System.out.println("openOrder");
+		//System.out.println("openOrder");
 	}
 
 	@Override
@@ -221,7 +260,7 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void nextValidId(int orderId) {
-		System.out.println("nextValidId orderId: " + orderId);
+		//System.out.println("nextValidId orderId: " + orderId);
 		id=orderId;
 	}
 
@@ -242,7 +281,7 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void execDetails(int reqId, Contract contract, Execution execution) {
-		System.out.println("execDetails");
+		//System.out.println("execDetails");
 	}
 
 	@Override
@@ -267,7 +306,7 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void managedAccounts(String accountsList) {
-		System.out.println("managedAccounts");
+		//System.out.println("managedAccounts");
 	}
 
 	@Override
@@ -327,7 +366,7 @@ public class IBWrapper implements EWrapper{
 
 	@Override
 	public void commissionReport(CommissionReport commissionReport) {
-		System.out.println("commissionReport");
+		//System.out.println("commissionReport");
 	}
 
 	@Override
