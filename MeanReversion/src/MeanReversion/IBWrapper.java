@@ -1,7 +1,5 @@
 package MeanReversion;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -14,8 +12,6 @@ import com.ib.client.Execution;
 import com.ib.client.Order;
 import com.ib.client.OrderState;
 import com.ib.client.UnderComp;
-
-// need to handle rejected orders.  How do I find out an order has been rejected?
 
 public class IBWrapper implements EWrapper{
     private EClientSocket m_client = new EClientSocket(this);
@@ -32,16 +28,9 @@ public class IBWrapper implements EWrapper{
 	ConcurrentHashMap<Double, Integer> activeTrades = new ConcurrentHashMap<Double, Integer>();
 	
 	// orderId, status
-	// Custom Status: New, Matched
+	// Custom Status: New
 	// IB Status: PreSubmitted, Submitted, Filled, Cancelled, Inactive
 	ConcurrentHashMap<Integer, String> orderStatus = new ConcurrentHashMap<Integer, String>();
-
-	// orderId, side
-	ConcurrentHashMap<Integer, String> orderSide = new ConcurrentHashMap<Integer, String>();
-
-	// two lists of orderIds that have bill filled but not matched yet
-	List<Integer> longTradeList = new ArrayList<Integer>();
-	List<Integer> shortTradeList = new ArrayList<Integer>();
 	
     public IBWrapper() {
 		contract = new Contract();
@@ -114,20 +103,17 @@ public class IBWrapper implements EWrapper{
 		}
 		
 		if(field==1 || field==2){
-			place10orders();
+			placeOrders();
 		}
 	}
 	
-	private synchronized void place10orders()
+	private synchronized void placeOrders()
 	{
 		if (bidPrice==0 || askPrice==0)
 			return;
-		
-		for(int i=0;i<5;i++)
-		{
-			placeOrder(bidPrice-i*0.25, "BUY");
-			placeOrder(askPrice+i*0.25, "SELL");
-		}
+
+		placeOrder(bidPrice-0.25, "BUY");
+		placeOrder(askPrice+0.25, "SELL");
 	}
 	
 	private synchronized void placeOrder(double price, String action){
@@ -148,7 +134,6 @@ public class IBWrapper implements EWrapper{
 
 		activeTrades.put(price, id);
 		orderStatus.put(id, "New");
-		orderSide.put(id, action);
 
 		id++;
 	}
@@ -181,36 +166,10 @@ public class IBWrapper implements EWrapper{
 	@Override
 	public void orderStatus(int orderId, String status, int filled, int remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, String whyHeld) {
 		System.out.println("orderStatus status: " + status + " orderId: " + orderId);
-		orderStatus.put(orderId, status);
-		
-		if(status.equals("Filled")){
-			// Now we want to match this with another trade before we trade again at this price
-			String side = orderSide.get(orderId);
-			
-			if(side.equals("BUY")){
-				longTradeList.add(orderId);
-			}
-			else if(side.equals("SELL")){
-				shortTradeList.add(orderId);
-			}
-			
-			matchFilledTrades();
-		}
+		orderStatus.put(orderId, status);		
 		deleteCompletedTrades();
 	}
-	
-	private synchronized void matchFilledTrades(){
-		if(!longTradeList.isEmpty() && !shortTradeList.isEmpty()){
-			int shortOrderId = shortTradeList.remove(0);
-			orderStatus.put(shortOrderId, "Matched");
-
-			int longOrderId = longTradeList.remove(0);
-			orderStatus.put(longOrderId, "Matched");
-			
-			System.out.println("Matched two trades.");
-		}		
-	}
-	
+		
 	private synchronized void deleteCompletedTrades(){
 		//System.out.println("Checking for trades to delete.");
 		for(Entry<Double, Integer> entry : activeTrades.entrySet()) {
@@ -219,10 +178,9 @@ public class IBWrapper implements EWrapper{
 	
 		    String status=orderStatus.get(orderId);
 		    
-		    if(status.equals("Matched") || status.equals("Cancelled")){
+		    if(status.equals("Filled") || status.equals("Cancelled")){
 		    	activeTrades.remove(price);
-//		    	orderStatus.remove(orderId);
-//		    	orderSide.remove(orderId);
+		    	orderStatus.remove(orderId);
 		    	System.out.println("Removed a trade with price: " + price);
 		    }
 		}
